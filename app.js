@@ -18,7 +18,7 @@
 const HARD_SHEETS_URL = "https://script.google.com/macros/s/AKfycbzVcOXNOIYtG5FF_ggcmYDR5QV6gGLvsqtyke0NNACo5T7cEzb-LGwSKIQtCtxZQRmL3Q/exec";
 
 
-  const DEFAULT_VEHICLES = ["GPG-830", "JLN-678", "LMO-637"];
+  const DEFAULT_VEHICLES = ["GPG-830", "JLN-678", "ISS-440"];
 
   // ------------------ STATE ------------------
   let cfg = loadJSON(STORAGE.cfg, DEFAULT_CFG);
