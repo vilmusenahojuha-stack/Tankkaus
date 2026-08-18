@@ -173,3 +173,8 @@ select{ appearance: none; }
   color:#75f0ac;
   background:rgba(61,220,132,.10);
 }
+
+.syncError{
+  color:#ff9a9a;
+  overflow-wrap:anywhere;
+}
