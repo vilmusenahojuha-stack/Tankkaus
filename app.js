@@ -7,6 +7,7 @@
     history: "fuel_history_v1",
     vehicles: "fuel_vehicles_v1",
     last: "fuel_last_v1",
+    adblueLast: "fuel_adblue_last_v1",
   };
 
   const DEFAULT_CFG = {
@@ -24,7 +25,8 @@ const HARD_SHEETS_URL = "https://script.google.com/macros/s/AKfycbzVcOXNOIYtG5FF
   let cfg = loadJSON(STORAGE.cfg, DEFAULT_CFG);
   let vehicles = loadJSON(STORAGE.vehicles, DEFAULT_VEHICLES);
   let history = loadJSON(STORAGE.history, []); // includes queued unsent rows
-  let lastCache = loadJSON(STORAGE.last, {}); // { [vehicle]: { odoKm, ts, place, liters } }
+  let lastCache = loadJSON(STORAGE.last, {}); // viimeisin onnistunut tankkaus / auto
+  let adblueLastCache = loadJSON(STORAGE.adblueLast, {}); // viimeisin AdBlue-tankkaus / auto
 
   // ------------------ HELPERS ------------------
   const $ = (id) => document.getElementById(id);
@@ -93,22 +95,30 @@ const HARD_SHEETS_URL = "https://script.google.com/macros/s/AKfycbzVcOXNOIYtG5FF
   }
 
 function updateLastCache(vehicle, entry){
-  if(!vehicle) return;
-  const ts = Number(entry?.ts) || Date.now();
-  const odoKm = entry?.odoKm ?? "";
-  lastCache[vehicle] = {
-    ts,
-    odoKm,
-    place: entry?.place || "",
-    liters: entry?.liters ?? ""
-  };
+  if(!vehicle || !entry) return;
+  lastCache[vehicle] = { ...entry, vehicle, sent: true, sending: false };
   saveJSON(STORAGE.last, lastCache);
 }
 
 function getPrevFromCache(vehicle){
   const v = lastCache[vehicle];
-  if(!v) return null;
-  return { vehicle, ts: v.ts || 0, odoKm: v.odoKm };
+  return v ? { ...v, vehicle } : null;
+}
+
+function updateAdblueLastCache(vehicle, entry){
+  if(!vehicle || !entry || !(Number(entry.adblueLiters) > 0)) return;
+  adblueLastCache[vehicle] = {
+    vehicle,
+    ts: Number(entry.ts) || Date.now(),
+    odoKm: entry.odoKm,
+    adblueLiters: entry.adblueLiters
+  };
+  saveJSON(STORAGE.adblueLast, adblueLastCache);
+}
+
+function getPrevAdblue(vehicle){
+  const v = adblueLastCache[vehicle];
+  return v ? { ...v, vehicle } : null;
 }
 
 
@@ -234,12 +244,21 @@ function getPrevFromCache(vehicle){
     }
     $("fAvgCalc").value = avgCalc ? `${avgCalc}` : "";
 
-    // calc adblue avg per 1000 km
+    // AdBlue l/1000 km lasketaan edellisestä AdBlue-tankkauksesta.
     let adAvg = "";
-    if(adblue !== null && drivenFinal !== null && drivenFinal > 0 && adblue > 0){
-      adAvg = fmt2((adblue / drivenFinal) * 1000);
+    const prevAdblue = getPrevAdblue(vehicle);
+    const adblueDrivenKm = prevAdblue && odo !== null ? odo - Number(prevAdblue.odoKm) : null;
+    if(adblue > 0 && Number.isFinite(adblueDrivenKm) && adblueDrivenKm > 0){
+      adAvg = fmt2((adblue / adblueDrivenKm) * 1000);
     }
-    $("fAdblueAvg").value = adAvg ? `${adAvg}` : "";
+    $("fAdblueAvg").value = adAvg || "";
+    const adHint = $("adblueHint");
+    if(adHint){
+      if(!(adblue > 0)) adHint.textContent = "";
+      else if(!prevAdblue) adHint.textContent = "Ensimmäinen AdBlue-tankkaus aloittaa kulutusseurannan.";
+      else if(!(adblueDrivenKm > 0)) adHint.textContent = "⚠️ Mittarilukeman pitää olla edellistä AdBlue-tankkausta suurempi.";
+      else adHint.textContent = `Laskettu ${adblueDrivenKm} km matkalta edellisestä AdBlue-tankkauksesta.`;
+    }
   }
 
   function markDrivenUserEdited(){
@@ -262,18 +281,18 @@ function getPrevFromCache(vehicle){
 
   const vehicle = $("fVehicle")?.value || "";
 
-  // Näytetään vain valitun auton viimeisin merkintä (käytännössä jonossa oleva, koska sent-merkinnät tyhjennetään)
-  const arr = [...history]
-    .filter(e => !vehicle || e.vehicle === vehicle)
+  // Näytä vain yksi: uusin paikallinen/jonossa oleva tai viimeisin Sheetsiin tallennettu.
+  const local = history.filter(e => !vehicle || e.vehicle === vehicle);
+  const cached = vehicle && lastCache[vehicle] ? [lastCache[vehicle]] : [];
+  const arr = [...local, ...cached]
+    .filter((e, i, all) => all.findIndex(x => x.id && e.id && x.id === e.id) === i)
     .sort((a,b)=> (b.ts||0) - (a.ts||0));
 
   list.innerHTML = "";
   if(empty) empty.style.display = arr.length ? "none" : "block";
 
-  const queued = arr.filter(e=>e.sent !== true).length;
-  if(meta){
-    meta.textContent = queued ? ` (Jonossa ${queued})` : "";
-  }
+  const queued = history.filter(e => (!vehicle || e.vehicle === vehicle) && e.sent !== true).length;
+  if(meta) meta.textContent = queued ? ` (Jonossa ${queued})` : " (viimeisin)";
 
   if(!arr.length) return;
 
@@ -289,8 +308,8 @@ function getPrevFromCache(vehicle){
   const dateStr = (e.date && e.time) ? `${e.date} ${e.time}` : dt.toLocaleString();
   left.textContent = `${dateStr} • ${e.place || "-"}`;
   const badge = document.createElement("span");
-  badge.className = "badge" + (e.sent === true ? "" : " queue");
-  badge.textContent = e.sent === true ? "SHEETS" : "JONOSSA";
+  badge.className = "badge" + (e.sent === true ? " sent" : (e.sending ? " sending" : " queue"));
+  badge.textContent = e.sent === true ? "TALLENNETTU" : (e.sending ? "LÄHETETÄÄN…" : "ODOTTAA YHTEYTTÄ");
   top.appendChild(left);
   top.appendChild(badge);
 
@@ -310,7 +329,8 @@ function getPrevFromCache(vehicle){
   r3.className = "row";
   const ad = e.adblueLiters ?? "";
   const adavg = e.adblueLper1000 ?? "";
-  r3.textContent = `AdBlue ${ad !== "" && Number(ad) > 0 ? ad + " l" : "-"} • Kulutus ${adavg !== "" ? adavg + " l/1000" : "-"}`;
+  const adkm = e.adblueDrivenKm ?? "";
+  r3.textContent = `AdBlue ${ad !== "" && Number(ad) > 0 ? ad + " l" : "-"} • Kulutus ${adavg !== "" ? adavg + " l/1000 km" : "-"}${adkm !== "" ? " • Matka " + adkm + " km" : ""}`;
 
   div.appendChild(top);
   div.appendChild(r1);
@@ -353,11 +373,22 @@ function getPrevFromCache(vehicle){
     const url = getSheetsUrl();
     if(!url) throw new Error("Sheets URL puuttuu");
     const body = JSON.stringify({ action, ...payload });
-    const res = await fetch(url, {
-      method:"POST",
-      headers: { "Content-Type": "text/plain;charset=utf-8" },
-      body
-    });
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 15000);
+    let res;
+    try {
+      res = await fetch(url, {
+        method:"POST",
+        headers: { "Content-Type": "text/plain;charset=utf-8" },
+        body,
+        signal: controller.signal
+      });
+    } catch (error) {
+      if(error && error.name === "AbortError") throw new Error("Sheets-yhteys aikakatkaistiin 15 sekunnin jälkeen");
+      throw error;
+    } finally {
+      clearTimeout(timer);
+    }
     const txt = await res.text();
     let data = null;
     try{ data = JSON.parse(txt); }catch{}
@@ -379,32 +410,53 @@ function getPrevFromCache(vehicle){
     }
   }
 
-  async function syncQueue(){
+  async function syncQueue({ ask = true, silent = false } = {}){
     const url = getSheetsUrl();
     if(!url){
-      toast("Sheets URL puuttuu");
+      if(!silent) toast("Sheets URL puuttuu");
       return;
     }
     const unsent = history.filter(e => e.sent !== true);
-    if(unsent.length === 0){
-      toast("Ei jonossa olevia");
+    if(!unsent.length){
+      if(!silent) toast("Ei jonossa olevia");
       return;
     }
-    const ok = await confirmModal(`Lähetetään jonossa olevat merkinnät Sheetiin?\n\nKpl: ${unsent.length}`, "LÄHETÄ");
-    if(!ok) return;
-
-    try{
-      const data = await callSheets("appendFuel", { rows: unsent });
-      // mark as sent
-      const sentIds = new Set((data.sentIds || unsent.map(x=>x.id)));
-      history = history.map(e => sentIds.has(e.id) ? {...e, sent:true} : e);
-      saveJSON(STORAGE.history, history);
-      toast("Lähetetty ✅");
-      renderHistory();
-    }catch(err){
-      toast("Lähetys epäonnistui");
-      $("settingsStatus").textContent = "❌ " + (err?.message || err);
+    if(ask){
+      const ok = await confirmModal(`Lähetetään jonossa olevat merkinnät Sheetiin?\n\nKpl: ${unsent.length}`, "LÄHETÄ");
+      if(!ok) return;
     }
+
+    let sentCount = 0;
+    let failedCount = 0;
+    for(const entry of unsent){
+      entry.sending = true;
+      entry.sentErr = "";
+      saveJSON(STORAGE.history, history);
+      renderHistory();
+      try{
+        const data = await callSheets("appendFuel", { rows: [entry] });
+        const sentIds = new Set(data.sentIds || [entry.id]);
+        if(!sentIds.has(entry.id)) throw new Error("Sheets ei vahvistanut tallennusta");
+        entry.sent = true;
+        entry.sending = false;
+        entry.sentAt = Date.now();
+        updateLastCache(entry.vehicle, entry);
+        updateAdblueLastCache(entry.vehicle, entry);
+        sentCount++;
+      }catch(err){
+        entry.sent = false;
+        entry.sending = false;
+        entry.sentErr = String(err?.message || err);
+        failedCount++;
+      }
+      saveJSON(STORAGE.history, history);
+      renderHistory();
+    }
+    history = history.filter(e => e.sent !== true);
+    saveJSON(STORAGE.history, history);
+    renderHistory();
+    if(sentCount) await refreshFromSheets();
+    if(!silent) toast(failedCount ? `Lähetetty ${sentCount}, jonossa ${failedCount}` : "Lähetetty ✅");
   }
 
   async function refreshFromSheets(){
@@ -421,6 +473,8 @@ function getPrevFromCache(vehicle){
       const normalized = sheetRows.map(normalizeRowFromSheets).sort((a,b)=> (b.ts||0)-(a.ts||0));
       const last = normalized[0];
       updateLastCache(vehicle, last);
+      const lastAdblue = normalized.find(e => Number(e.adblueLiters) > 0);
+      if(lastAdblue) updateAdblueLastCache(vehicle, lastAdblue);
     }
 
     // Historia pidetään kevyenä: vain jonossa olevat merkinnät jäävät paikallisesti
@@ -455,7 +509,9 @@ function getPrevFromCache(vehicle){
       avgCarLper100: r.avgCarLper100 ?? r.avgCar ?? "",
       adblueLiters: r.adblueLiters ?? r.adblue ?? "",
       adblueLper1000: r.adblueLper1000 ?? "",
-      sent: true
+      adblueDrivenKm: r.adblueDrivenKm ?? "",
+      sent: true,
+      sending: false
     };
     return e;
   }
@@ -488,9 +544,15 @@ function getPrevFromCache(vehicle){
     if(liters !== null && drivenKmFinal !== null && drivenKmFinal > 0){
       avgCalcLper100 = Number(((liters / drivenKmFinal) * 100).toFixed(1));
     }
+    const prevAdblue = getPrevAdblue(vehicle);
+    let adblueDrivenKm = null;
+    if(adblueLiters > 0 && prevAdblue && odoKm !== null){
+      const delta = odoKm - Number(prevAdblue.odoKm);
+      if(delta > 0) adblueDrivenKm = delta;
+    }
     let adblueLper1000 = null;
-    if(adblueLiters !== null && drivenKmFinal !== null && drivenKmFinal > 0 && adblueLiters > 0){
-      adblueLper1000 = Number(((adblueLiters / drivenKmFinal) * 1000).toFixed(2));
+    if(adblueLiters > 0 && adblueDrivenKm !== null){
+      adblueLper1000 = Number(((adblueLiters / adblueDrivenKm) * 1000).toFixed(2));
     }
 
     return {
@@ -508,7 +570,10 @@ function getPrevFromCache(vehicle){
       avgCarLper100: (avgCarLper100 ?? ""),
       adblueLiters: (adblueLiters ?? 0),
       adblueLper1000: (adblueLper1000 ?? ""),
-      sent: false
+      adblueDrivenKm: (adblueDrivenKm ?? ""),
+      sent: false,
+      sending: true,
+      sentErr: ""
     };
   }
 
@@ -551,14 +616,24 @@ function getPrevFromCache(vehicle){
       const data = await callSheets("appendFuel", { rows: [entry] });
       // mark as sent
       const sentIds = new Set((data.sentIds || [entry.id]));
-      history = history.map(e => sentIds.has(e.id) ? {...e, sent:true} : e);
+      if(!sentIds.has(entry.id)) throw new Error("Sheets ei vahvistanut tallennusta");
+      entry.sent = true;
+      entry.sending = false;
+      entry.sentAt = Date.now();
+      updateLastCache(entry.vehicle, entry);
+      updateAdblueLastCache(entry.vehicle, entry);
+      history = history.filter(e => e.id !== entry.id);
       saveJSON(STORAGE.history, history);
       toast("Tallennettu Sheetiin ✅");
       renderHistory();
-      // refresh if endpoint supports
       await refreshFromSheets();
     }catch(err2){
-      toast("Ei yhteyttä — tallennettu jonoon");
+      entry.sent = false;
+      entry.sending = false;
+      entry.sentErr = String(err2?.message || err2);
+      saveJSON(STORAGE.history, history);
+      renderHistory();
+      toast("Ei yhteyttä — odottaa uutta lähetystä");
       $("settingsStatus").textContent = "❌ " + (err2?.message || err2);
     }
   }
@@ -587,7 +662,7 @@ function getPrevFromCache(vehicle){
     $("btnSaveSettings").addEventListener("click", () => { saveSettings(); closeSettings(); });
 
     $("btnTest").addEventListener("click", testSheets);
-    $("btnSync").addEventListener("click", syncQueue);
+    $("btnSync").addEventListener("click", () => syncQueue());
 
     $("btnAddVehicle").addEventListener("click", addVehicle);
 
@@ -651,6 +726,10 @@ function getPrevFromCache(vehicle){
   });
   window.addEventListener("unhandledrejection", (e) => {
     console.error(e);
+  });
+
+  window.addEventListener("online", () => {
+    syncQueue({ ask: false, silent: true });
   });
 
   bind();
