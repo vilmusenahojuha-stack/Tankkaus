@@ -117,8 +117,13 @@ function updateAdblueLastCache(vehicle, entry){
 }
 
 function getPrevAdblue(vehicle){
-  const v = adblueLastCache[vehicle];
-  return v ? { ...v, vehicle } : null;
+  const cached = adblueLastCache[vehicle] ? { ...adblueLastCache[vehicle], vehicle } : null;
+  const local = [...history]
+    .filter(e => e.vehicle === vehicle && Number(e.adblueLiters) > 0 && Number.isFinite(Number(e.odoKm)))
+    .sort((a,b) => Number(b.ts || 0) - Number(a.ts || 0))[0] || null;
+  if(!local) return cached;
+  if(!cached) return local;
+  return Number(local.ts || 0) >= Number(cached.ts || 0) ? local : cached;
 }
 
 
@@ -336,6 +341,12 @@ function getPrevAdblue(vehicle){
   div.appendChild(r1);
   div.appendChild(r2);
   div.appendChild(r3);
+  if(e.sentErr){
+    const errorRow = document.createElement("div");
+    errorRow.className = "row syncError";
+    errorRow.textContent = "Tallennusvirhe: " + e.sentErr;
+    div.appendChild(errorRow);
+  }
 
   list.appendChild(div);
 }
@@ -734,4 +745,7 @@ function getPrevAdblue(vehicle){
 
   bind();
   init();
+  if(navigator.onLine){
+    setTimeout(() => syncQueue({ ask: false, silent: true }), 300);
+  }
 })();
