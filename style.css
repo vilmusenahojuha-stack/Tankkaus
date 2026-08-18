@@ -163,3 +163,13 @@ select{ appearance: none; }
   max-width: 92vw;
 }
 .toast.show{ display:block; }
+.badge.sending{
+  border-color:rgba(243,195,22,.75);
+  color:#ffe29a;
+  background:rgba(243,195,22,.10);
+}
+.badge.sent{
+  border-color:rgba(61,220,132,.65);
+  color:#75f0ac;
+  background:rgba(61,220,132,.10);
+}
